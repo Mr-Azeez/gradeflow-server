@@ -13,7 +13,14 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(cors());
+const allowedOrigins = process.env.CLIENT_URL ? [process.env.CLIENT_URL] : [];
+
+app.use(
+  cors({
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+    credentials: true,
+  }),
+);
 // Force UTF-8 for JSON responses
 app.use((_req, res, next) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");

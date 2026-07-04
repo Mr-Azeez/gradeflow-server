@@ -1,0 +1,1 @@
+ALTER TABLE semesters ADD COLUMN IF NOT EXISTS target_gpa NUMERIC(3,2) NULL;

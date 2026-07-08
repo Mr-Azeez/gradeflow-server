@@ -15,7 +15,11 @@ const auth_2 = __importDefault(require("./middleware/auth"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 // Middleware
-app.use((0, cors_1.default)());
+const allowedOrigins = process.env.CLIENT_URL ? [process.env.CLIENT_URL] : [];
+app.use((0, cors_1.default)({
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+    credentials: true,
+}));
 // Force UTF-8 for JSON responses
 app.use((_req, res, next) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");

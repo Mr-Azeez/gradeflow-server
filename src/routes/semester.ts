@@ -30,6 +30,49 @@ const hasValidSemesterSelection = (level: unknown, semesterNumber: unknown) => {
   );
 };
 
+const deriveSemesterName = (level: number, semesterNumber: number) => {
+  const semesterLabel = semesterNumber === 1 ? "First Semester" : "Second Semester";
+  return `${level}L - ${semesterLabel}`;
+};
+
+const recalculateCurrentSemester = async (userId: string) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      "UPDATE semesters SET is_current = FALSE WHERE user_id = $1",
+      [userId],
+    );
+
+    const currentSemesterResult = await client.query(
+      `SELECT id
+       FROM semesters
+       WHERE user_id = $1
+       ORDER BY level DESC, semester_number DESC, created_at DESC
+       LIMIT 1`,
+      [userId],
+    );
+
+    const currentSemesterId = currentSemesterResult.rows[0]?.id ?? null;
+
+    if (currentSemesterId) {
+      await client.query(
+        "UPDATE semesters SET is_current = TRUE WHERE id = $1 AND user_id = $2",
+        [currentSemesterId, userId],
+      );
+    }
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
 // Get all semesters for logged in user
 router.get("/", authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
@@ -45,34 +88,38 @@ router.get("/", authMiddleware, async (req: AuthRequest, res: Response) => {
 
 // Create semester
 router.post("/", authMiddleware, async (req: AuthRequest, res: Response) => {
-  const { name, academic_year, level, semester_number, is_current } = req.body;
+  const { academic_year, level, semester_number } = req.body;
 
   if (!hasValidSemesterSelection(level, semester_number)) {
     return res.status(400).json({ message: "Invalid level or semester number" });
   }
 
-  try {
-    // If new semester is current, unset others
-    if (is_current) {
-      await pool.query(
-        "UPDATE semesters SET is_current = FALSE WHERE user_id = $1",
-        [req.userId],
-      );
-    }
+  const parsedLevel = parseSemesterInt(level)!;
+  const parsedSemesterNumber = parseSemesterInt(semester_number)!;
+  const derivedName = deriveSemesterName(parsedLevel, parsedSemesterNumber);
 
+  try {
     const result = await pool.query(
       `INSERT INTO semesters (user_id, name, academic_year, level, semester_number, is_current)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, FALSE) RETURNING *`,
       [
         req.userId,
-        name,
+        derivedName,
         academic_year,
-        parseSemesterInt(level),
-        parseSemesterInt(semester_number),
-        is_current || false,
+        parsedLevel,
+        parsedSemesterNumber,
       ],
     );
-    res.status(201).json(result.rows[0]);
+
+    if (req.userId) {
+      await recalculateCurrentSemester(req.userId);
+    }
+
+    const refreshed = await pool.query(
+      "SELECT * FROM semesters WHERE id = $1 AND user_id = $2",
+      [result.rows[0].id, req.userId],
+    );
+    res.status(201).json(refreshed.rows[0] ?? result.rows[0]);
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err });
   }
@@ -81,7 +128,7 @@ router.post("/", authMiddleware, async (req: AuthRequest, res: Response) => {
 // Update semester
 router.put("/:id", authMiddleware, async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
-  const { name, academic_year, level, semester_number, is_current } = req.body;
+  const { academic_year, level, semester_number } = req.body;
   const parsedLevel = parseSemesterInt(level);
   const parsedSemesterNumber = parseSemesterInt(semester_number);
 
@@ -89,27 +136,46 @@ router.put("/:id", authMiddleware, async (req: AuthRequest, res: Response) => {
     return res.status(400).json({ message: "Invalid level or semester number" });
   }
 
+  const derivedName = deriveSemesterName(parsedLevel!, parsedSemesterNumber!);
+
   try {
-    if (is_current) {
-      await pool.query(
-        "UPDATE semesters SET is_current = FALSE WHERE user_id = $1",
-        [req.userId],
-      );
+    const existingResult = await pool.query(
+      "SELECT level, semester_number FROM semesters WHERE id = $1 AND user_id = $2",
+      [id, req.userId],
+    );
+
+    if (existingResult.rows.length === 0) {
+      return res.status(404).json({ message: "Semester not found" });
     }
 
+    const existingSemester = existingResult.rows[0];
+    const shouldRecalculate =
+      existingSemester.level !== parsedLevel ||
+      existingSemester.semester_number !== parsedSemesterNumber;
+
     const result = await pool.query(
-      `UPDATE semesters SET name = $1, academic_year = $2, level = $3, semester_number = $4, is_current = $5
-       WHERE id = $6 AND user_id = $7 RETURNING *`,
+      `UPDATE semesters SET name = $1, academic_year = $2, level = $3, semester_number = $4
+       WHERE id = $5 AND user_id = $6 RETURNING *`,
       [
-        name,
+        derivedName,
         academic_year,
         parsedLevel,
         parsedSemesterNumber,
-        is_current || false,
         id,
         req.userId,
       ],
     );
+
+    if (shouldRecalculate && req.userId) {
+      await recalculateCurrentSemester(req.userId);
+      const refreshed = await pool.query(
+        "SELECT * FROM semesters WHERE id = $1 AND user_id = $2",
+        [id, req.userId],
+      );
+      res.json(refreshed.rows[0] ?? result.rows[0]);
+      return;
+    }
+
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err });
@@ -163,6 +229,9 @@ router.delete(
         id,
         req.userId,
       ]);
+      if (req.userId) {
+        await recalculateCurrentSemester(req.userId);
+      }
       res.json({ message: "Semester deleted" });
     } catch (err) {
       res.status(500).json({ message: "Server error", error: err });

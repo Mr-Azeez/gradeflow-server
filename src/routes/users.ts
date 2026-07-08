@@ -67,26 +67,38 @@ router.get("/me", async (req: AuthRequest, res: Response) => {
       [userId],
     );
 
-    const semestersWithGPA = await Promise.all(
-      semestersResult.rows.map(async (sem: any) => {
-        const gpaResult = await pool.query(
-          `SELECT
-             CASE WHEN SUM(credit_units) = 0 THEN NULL
-             ELSE ROUND(SUM(grade_point * credit_units)::numeric / SUM(credit_units), 2)
-             END AS gpa
-           FROM courses
-           WHERE semester_id = $1 AND user_id = $2 AND grade_point IS NOT NULL`,
-          [sem.id, userId],
-        );
-
-        const rawGpa = gpaResult.rows[0]?.gpa ?? null;
-
-        return {
-          ...sem,
-          actual_gpa: rawGpa == null ? null : Number(rawGpa),
-        };
-      }),
+    const semestersWithGPAResult = await pool.query(
+      `SELECT
+         s.id,
+         s.name,
+         s.level,
+         s.semester_number,
+         s.academic_year,
+         s.is_current,
+         ${semestersHaveTargetGpa ? "s.target_gpa" : "NULL::numeric AS target_gpa"},
+         CASE
+           WHEN SUM(CASE WHEN c.grade_point IS NOT NULL THEN c.credit_units ELSE 0 END) = 0
+             THEN NULL
+           ELSE ROUND(
+             SUM(CASE WHEN c.grade_point IS NOT NULL THEN c.grade_point * c.credit_units ELSE 0 END)::numeric
+             / NULLIF(SUM(CASE WHEN c.grade_point IS NOT NULL THEN c.credit_units ELSE 0 END), 0),
+             2
+           )
+         END AS actual_gpa
+       FROM semesters s
+       LEFT JOIN courses c
+         ON c.semester_id = s.id
+        AND c.user_id = $2
+       WHERE s.user_id = $1
+       GROUP BY s.id, s.name, s.level, s.semester_number, s.academic_year, s.is_current${semestersHaveTargetGpa ? ", s.target_gpa" : ""}
+       ORDER BY s.level ASC, s.semester_number ASC`,
+      [userId, userId],
     );
+
+    const semestersWithGPA = semestersWithGPAResult.rows.map((sem: any) => ({
+      ...sem,
+      actual_gpa: sem.actual_gpa == null ? null : Number(sem.actual_gpa),
+    }));
 
     res.json({
       user: userResult.rows[0],

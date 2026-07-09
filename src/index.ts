@@ -5,6 +5,7 @@ import authRouter from "./routes/auth";
 import semestersRouter from "./routes/semester";
 import courseRouter from "./routes/courses";
 import analyticsRouter from "./routes/analytics";
+import feedbackRouter from "./routes/feedback";
 import usersRouter from "./routes/users";
 import authMiddleware from "./middleware/auth";
 
@@ -31,6 +32,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/semesters", semestersRouter);
 app.use("/api/courses", courseRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/feedback", feedbackRouter);
 app.use("/api/users", authMiddleware, usersRouter);
 
 // Test route
